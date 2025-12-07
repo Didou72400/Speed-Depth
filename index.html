@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Runner 3D — Zone initiale, musique, menu, classement</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: linear-gradient(#87ceeb, #f0f8ff);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      overflow: hidden;
+    }
+    canvas { display: block; }
+
+    /* HUD en jeu */
+    #hud {
+      position: fixed; inset: 12px auto auto 12px;
+      background: rgba(0,0,0,0.55);
+      color: #fff; padding: 8px 12px; border-radius: 8px;
+      display: none; gap: 12px; align-items: center; z-index: 10;
+      font-weight: 700;
+    }
+    #hud.show { display: flex; }
+
+    /* Overlay messages (Game Over) */
+    #msg {
+      position: fixed; inset: 50% 0 auto 0; transform: translateY(-50%);
+      text-align: center; color: #fff; z-index: 20;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.6);
+      pointer-events: auto; /* pour clic sur boutons */
+    }
+    #msg h1 { margin: 0; font-size: 48px; }
+    #msg p { margin: 8px 0 0; font-size: 18px; }
+    #overlay-btns { margin-top: 14px; display: inline-flex; gap: 10px; }
+
+    /* Menu de démarrage */
+    #menu {
+      position: fixed; inset: 0;
+      display: grid; place-items: center;
+      background: rgba(0,0,0,0.45);
+      color: #fff; z-index: 30;
+    }
+    .card {
+      background: rgba(20,20,30,0.85);
+      padding: 20px 24px; border-radius: 12px; width: min(560px, 92vw);
+      box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+      text-align: center;
+    }
+    .title { font-size: 40px; font-weight: 900; margin: 0 0 8px; }
+    .subtitle { font-size: 16px; color: #cfd8dc; margin: 0 0 16px; }
+    .field { margin: 10px 0; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+    .input {
+      padding: 10px 12px; border-radius: 8px; border: none;
+      background: #f7f7f7; color: #222; min-width: 200px; font-weight: 700;
+    }
+    .btn {
+      appearance: none; border: none; cursor: pointer;
+      background: #ff7f50; color: #fff; padding: 10px 14px;
+      border-radius: 8px; font-weight: 800;
+    }
+    .btn.secondary { background: #607d8b; }
+
+    /* Leaderboard */
+    #board-wrap {
+      margin-top: 16px; text-align: left;
+      max-height: 260px; overflow: auto;
+      background: rgba(255,255,255,0.06);
+      border-radius: 10px; padding: 8px;
+    }
+    table { width: 100%; border-collapse: collapse; color: #fff; }
+    th, td { padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.15); }
+    th { text-align: left; font-size: 13px; color: #e0e0e0; }
+  </style>
+  <script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+</head>
+<body>
+  <!-- Menu de démarrage -->
+  <div id="menu">
+    <div class="card">
+      <h1 class="title">Runner 3D</h1>
+      <p class="subtitle">Zone initiale remplie, musique, leaderboard, accélération progressive.</p>
+
+      <div class="field">
+        <input id="pseudo" class="input" placeholder="Ton pseudo (optionnel)" maxlength="20">
+        <button id="start" class="btn">Start</button>
+        <button id="mute" class="btn secondary">Musique: ON</button>
+      </div>
+
+      <div id="board-wrap">
+        <table id="leader">
+          <thead>
+            <tr><th>#</th><th>Pseudo</th><th>Score</th><th>Date</th></tr>
+          </thead>
+          <tbody id="leader-body">
+            <tr><td colspan="4">Chargement du classement…</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p class="subtitle">Contrôles: Espace / ↑ / W pour sauter, ←/→ ou A/D pour changer de voie. Mobile: glisse horizontal / vers le haut.</p>
+    </div>
+  </div>
+
+  <!-- HUD en jeu -->
+  <div id="hud">
+    <div><strong>Score:</strong> <span id="score">0</span></div>
+    <div><strong>Vitesse:</strong> <span id="speed">10</span></div>
+    <div><strong>Voie:</strong> <span id="lane">Centre</span></div>
+  </div>
+
+  <!-- Messages (game over) -->
+  <div id="msg" aria-live="polite" role="status"></div>
+
+  <!-- Musique de fond -->
+  <audio id="music" preload="auto" loop>
+    <!-- Remplace ces fichiers par ta musique libre de droits -->
+    <source src="music.mp3" type="audio/mpeg">
+    <source src="music.ogg" type="audio/ogg">
+  </audio>
+
+  <script>
+    // --- Base Three.js ---
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.Fog(0x87ceeb, 30, 170);
+
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth/window.innerHeight, 0.1, 500);
+    camera.position.set(0, 3.2, 8);
+    camera.lookAt(0, 1, 0);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio));
+    document.body.appendChild(renderer.domElement);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.65);
+    scene.add(ambient);
+    const sun = new THREE.DirectionalLight(0xffffff, 0.9);
+    sun.position.set(5, 10, 8);
+    sun.castShadow = true;
+    scene.add(sun);
+
+    // --- Sol & voies ---
+    const groundGeo = new THREE.PlaneGeometry(30, 500, 1, 1);
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x2e8b57, roughness: 0.9, metalness: 0.0 });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.z = -120; // proche pour réduire le délai visuel
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const laneLines = new THREE.Group();
+    const lineMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
+    for (let i = -1; i <= 1; i++) {
+      const line = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.01, 500), lineMat);
+      line.position.set(i * 3, 0.01, -120);
+      laneLines.add(line);
+    }
+    scene.add(laneLines);
+
+    // --- Joueur ---
+    const playerGeo = new THREE.BoxGeometry(1, 1.2, 1);
+    const playerMat = new THREE.MeshStandardMaterial({ color: 0x1e90ff, roughness: 0.6 });
+    const player = new THREE.Mesh(playerGeo, playerMat);
+    player.castShadow = true;
+    player.position.set(0, 0.6, 2);
+    scene.add(player);
+
+    const blobGeo = new THREE.CircleGeometry(0.6, 24);
+    const blobMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.2 });
+    const blob = new THREE.Mesh(blobGeo, blobMat);
+    blob.rotation.x = -Math.PI / 2;
+    blob.position.set(0, 0.01, 2);
+    scene.add(blob);
+
+    // --- UI refs ---
+    const hud = document.getElementById("hud");
+    const scoreEl = document.getElementById("score");
+    const speedEl = document.getElementById("speed");
+    const laneEl = document.getElementById("lane");
+    const msgEl = document.getElementById("msg");
+    const menu = document.getElementById("menu");
+    const pseudoInput = document.getElementById("pseudo");
+    const startBtn = document.getElementById("start");
+    const muteBtn = document.getElementById("mute");
+    const music = document.getElementById("music");
+    const leaderBody = document.getElementById("leader-body");
+
+    // --- État du jeu ---
+    const lanes = [-3, 0, 3];
+    let currentLaneIndex = 1;
+    let targetX = lanes[currentLaneIndex];
+    let jumpVel = 0;
+    const gravity = -25;
+    const jumpStrength = 12;
+    const lerpSpeed = 10;
+
+    let obstacles = [];
+    let spawnTimer = 0;
+    let spawnInterval = 0.7;   // apparitions rapides dès le début
+    let speed = 10;            // vitesse initiale plus élevée
+    let score = 0;
+    let running = false;       // démarre via menu
+    let last = performance.now();
+    let muted = false;
+
+    function updateLaneLabel() {
+      laneEl.textContent = currentLaneIndex === 0 ? "Gauche" : currentLaneIndex === 1 ? "Centre" : "Droite";
+    }
+    updateLaneLabel();
+
+    // --- Obstacles: spawn standard (toujours à -130 pendant la partie) ---
+    function spawnObstacle() {
+      const laneIndex = Math.floor(Math.random() * lanes.length);
+      const w = 1 + Math.random() * 0.8;
+      const h = 1 + Math.random() * 1.5;
+      const depth = 1;
+      const geo = new THREE.BoxGeometry(w, h, depth);
+      const mat = new THREE.MeshStandardMaterial({ color: 0xff3b30, roughness: 0.7 });
+      const box = new THREE.Mesh(geo, mat);
+      box.castShadow = true;
+      box.position.set(lanes[laneIndex], h / 2, -130);
+      scene.add(box);
+      obstacles.push(box);
+    }
+
+    // --- Zone initiale remplie: obstacles répartis entre -48 et -130 au démarrage/reset ---
+    function fillInitialZone() {
+      const minZ = -130, maxZ = -48;
+      const count = 15; // adapte la densité à ton goût
+      for (let i = 0; i < count; i++) {
+        const laneIndex = Math.floor(Math.random() * lanes.length);
+        const w = 1 + Math.random() * 0.8;
+        const h = 1 + Math.random() * 1.5;
+        const depth = 1;
+        const geo = new THREE.BoxGeometry(w, h, depth);
+        const mat = new THREE.MeshStandardMaterial({ color: 0xff3b30, roughness: 0.7 });
+        const box = new THREE.Mesh(geo, mat);
+        box.castShadow = true;
+        const zSpawn = minZ + Math.random() * (maxZ - minZ); // entre -130 et -48
+        box.position.set(lanes[laneIndex], h / 2, zSpawn);
+        scene.add(box);
+        obstacles.push(box);
+      }
+    }
+
+    function clearObstacles() { obstacles.forEach(o => scene.remove(o)); obstacles = []; }
+
+    // --- Collision AABB simple ---
+    function isColliding(a, b) {
+      const ax = a.position.x, ay = a.position.y, az = a.position.z;
+      const aw = 1, ah = 1.2, ad = 1;
+      const bw = b.geometry.parameters.width || 1;
+      const bh = b.geometry.parameters.height || 1;
+      const bd = b.geometry.parameters.depth || 1;
+      const bx = b.position.x, by = b.position.y, bz = b.position.z;
+      const dx = Math.abs(ax - bx) <= (aw/2 + bw/2);
+      const dy = Math.abs(ay - by) <= (ah/2 + bh/2);
+      const dz = Math.abs(az - bz) <= (ad/2 + bd/2);
+      return dx && dy && dz;
+    }
+
+    // --- Musique & autoplay (déverrouillage au premier geste) ---
+    function toggleMusic() {
+      muted = !muted;
+      muteBtn.textContent = "Musique: " + (muted ? "OFF" : "ON");
+      music.volume = muted ? 0 : 0.6;
+      if (!muted && running) music.play().catch(()=>{});
+      if (muted) music.pause();
+    }
+    muteBtn.addEventListener("click", toggleMusic);
+
+    const unlockAudio = () => {
+      music.volume = muted ? 0 : 0.6;
+      music.play().catch(()=>{});
+      document.removeEventListener("pointerdown", unlockAudio);
+      document.removeEventListener("keydown", unlockAudio);
+    };
+    document.addEventListener("pointerdown", unlockAudio, { once: true });
+    document.addEventListener("keydown", unlockAudio, { once: true });
+
+    // --- Leaderboard (client, à brancher) ---
+    const API_BASE = "/api/leaderboard";
+    async function fetchLeaderboard() {
+      try {
+        const res = await fetch(API_BASE + "?game=runner3d&limit=20");
+        const data = await res.json();
+        leaderBody.innerHTML = data.items.map((row, i) => `
+          <tr>
+            <td>${i+1}</td>
+            <td>${escapeHtml(row.pseudo ?? "Anonyme")}</td>
+            <td>${Math.floor(row.score)}</td>
+            <td>${new Date(row.createdAt).toLocaleDateString()}</td>
+          </tr>
+        `).join("");
+      } catch (e) {
+        leaderBody.innerHTML = `<tr><td colspan="4">Impossible de charger le classement.</td></tr>`;
+      }
+    }
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+    }
+    async function submitScore(score) {
+      const pseudo = (pseudoInput.value || "").slice(0,20);
+      try {
+        await fetch(API_BASE, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ game: "runner3d", score: Math.floor(score), pseudo: pseudo || null })
+        });
+      } catch (e) {}
+    }
+    fetchLeaderboard();
+
+    // --- Menu Start ---
+    startBtn.addEventListener("click", async () => {
+      menu.style.display = "none";
+      hud.classList.add("show");
+      running = true;
+      score = 0;
+      speed = 10;              // départ rapide
+      spawnTimer = 0;
+      currentLaneIndex = 1;
+      targetX = lanes[currentLaneIndex];
+      player.position.set(0, 0.6, 2);
+      jumpVel = 0;
+      updateLaneLabel();
+      msgEl.innerHTML = "";
+      clearObstacles();
+      fillInitialZone();       // remplir la zone [-48, -130] au démarrage
+      if (!muted) { try { await music.play(); } catch(e) {} music.volume = 0.6; }
+    });
+
+    // --- Contrôles clavier & tactile ---
+    window.addEventListener("keydown", (e) => {
+      if (!running) return;
+      if (e.key === "ArrowLeft" || e.key.toLowerCase() === "a") {
+        currentLaneIndex = Math.max(0, currentLaneIndex - 1);
+      } else if (e.key === "ArrowRight" || e.key.toLowerCase() === "d") {
+        currentLaneIndex = Math.min(lanes.length - 1, currentLaneIndex + 1);
+      } else if (e.key === " " || e.key.toLowerCase() === "w" || e.key === "ArrowUp") {
+        if (player.position.y <= 0.61) jumpVel = jumpStrength;
+      }
+      targetX = lanes[currentLaneIndex];
+      updateLaneLabel();
+    });
+
+    let touchStartX = 0, touchStartY = 0;
+    renderer.domElement.addEventListener("touchstart", (e) => {
+      if (!running) return;
+      const t = e.changedTouches[0];
+      touchStartX = t.clientX; touchStartY = t.clientY;
+    }, { passive: true });
+    renderer.domElement.addEventListener("touchend", (e) => {
+      if (!running) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - touchStartX;
+      const dy = t.clientY - touchStartY;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        if (dx < -30) currentLaneIndex = Math.max(0, currentLaneIndex - 1);
+        else if (dx > 30) currentLaneIndex = Math.min(lanes.length - 1, currentLaneIndex + 1);
+        targetX = lanes[currentLaneIndex]; updateLaneLabel();
+      } else {
+        if (dy < -30 && player.position.y <= 0.61) jumpVel = jumpStrength;
+      }
+    }, { passive: true });
+
+    // --- UI Game Over ---
+    function showGameOver() {
+      msgEl.innerHTML = `
+        <h1>Game Over</h1>
+        <p><strong>Score:</strong> ${Math.floor(score)}</p>
+        <div id="overlay-btns">
+          <button class="btn" id="retry">Rejouer</button>
+          <button class="btn secondary" id="menuBack">Menu</button>
+        </div>
+      `;
+      document.getElementById("retry").addEventListener("click", resetGame);
+      document.getElementById("menuBack").addEventListener("click", () => {
+        running = false;
+        hud.classList.remove("show");
+        menu.style.display = "grid";
+        msgEl.innerHTML = "";
+        music.pause();
+        fetchLeaderboard();
+      });
+    }
+
+    function resetGame() {
+      running = true;
+      score = 0;
+      speed = 10;              // redémarre rapide
+      spawnTimer = 0;
+      currentLaneIndex = 1;
+      targetX = lanes[currentLaneIndex];
+      player.position.set(0, 0.6, 2);
+      jumpVel = 0;
+      updateLaneLabel();
+      msgEl.innerHTML = "";
+      clearObstacles();
+      fillInitialZone();       // remplir à chaque reset
+      if (!muted) music.play().catch(()=>{});
+    }
+
+    // --- Boucle principale (accélération progressive) ---
+    function loop(now) {
+      const dt = Math.min(0.033, (now - last) / 1000);
+      last = now;
+
+      renderer.render(scene, camera);
+
+      if (!running) { requestAnimationFrame(loop); return; }
+
+      // Déplacer obstacles vers la caméra
+      obstacles.forEach(o => { o.position.z += speed * dt; });
+
+      // Nettoyage obstacles passés
+      obstacles = obstacles.filter(o => { if (o.position.z > 10) { scene.remove(o); return false; } return true; });
+
+      // Spawn: nouveaux obstacles uniquement à -130 pendant la partie
+      spawnTimer += dt;
+      const intervalScale = Math.max(0.35, spawnInterval - speed * 0.02);
+      if (spawnTimer >= intervalScale) { spawnTimer = 0; spawnObstacle(); }
+
+      // Accélération progressive
+      const accel = 0.45 + Math.min(0.35, score * 0.0007);
+      speed += dt * accel;
+      speedEl.textContent = Math.round(speed);
+
+      // Lerp latéral
+      player.position.x += (targetX - player.position.x) * Math.min(1, lerpSpeed * dt);
+      blob.position.x = player.position.x;
+
+      // Saut
+      if (player.position.y > 0.6 || jumpVel > 0) {
+        player.position.y += jumpVel * dt;
+        jumpVel += gravity * dt;
+        if (player.position.y <= 0.6) { player.position.y = 0.6; jumpVel = 0; }
+      }
+
+      // Collision
+      for (let i = 0; i < obstacles.length; i++) {
+        if (isColliding(player, obstacles[i])) {
+          running = false;
+          submitScore(score);
+          showGameOver();
+          break;
+        }
+      }
+
+      // Score
+      score += speed * dt;
+      scoreEl.textContent = Math.floor(score);
+
+      // Micro oscillation caméra
+      camera.position.y = 3.2 + Math.sin(now * 0.002) * 0.05;
+
+      requestAnimationFrame(loop);
+    }
+
+    // --- Responsive ---
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
